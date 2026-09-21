@@ -262,15 +262,21 @@ async function changePassword(client, user, input) {
   return { status: 200, body: { ok: true } };
 }
 
-async function sendReceipt(input) {
+async function sendReceipt(client, input) {
   const email = clean(input.email, 254);
   if (!validEmail(email)) return { status: 400, body: { error: 'Ingresá un correo válido.' } };
   if (!process.env.RESEND_API_KEY || !process.env.EMAIL_FROM) return { status: 503, body: { error: 'El envío por correo todavía no está configurado. Podés imprimir o guardar el comprobante.' } };
-  const appointment = input.appointment || {};
+  const id = Number(input.id), receipt = clean(input.receipt, 30);
+  const found = await client.execute({ sql: `SELECT a.id, a.receipt_code, a.doctor_key, a.location_key, a.appointment_date, a.appointment_time, p.first_name, p.last_name
+    FROM appointments a JOIN patients p ON p.id=a.patient_id WHERE a.id=? AND a.receipt_code=?`, args: [id, receipt] });
+  if (!found.rows[0]) return { status: 404, body: { error: 'No se encontró el comprobante solicitado.' } };
+  const appointment = found.rows[0];
+  const doctorNames = { patricia: 'Dra. Patricia Noelia Leiva Ibañez', veronica: 'Dra. Maria Veronica Leiva Ibañez' };
+  const locationNames = { aguilares: 'Aguilares', 'san-miguel': 'San Miguel de Tucumán' };
   const safe = value => clean(value, 300).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
   const response = await fetch('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${process.env.RESEND_API_KEY}`, 'Content-Type': 'application/json' }, body: JSON.stringify({
     from: process.env.EMAIL_FROM, to: [email], subject: 'Comprobante de turno confirmado · Dras. Leiva Ibañez',
-    html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#18372f"><h1>Turno confirmado</h1><p><strong>Paciente:</strong> ${safe(appointment.firstName)} ${safe(appointment.lastName)}</p><p><strong>Profesional:</strong> ${safe(appointment.doctorName)}</p><p><strong>Localidad:</strong> ${safe(appointment.locationName)}</p><p><strong>Fecha y hora:</strong> ${safe(appointment.date)} · ${safe(appointment.time)}</p><p><strong>Comprobante:</strong> ${safe(appointment.receipt)}</p><hr><p>Si surge algún inconveniente, Secretaría se comunicará al teléfono informado.</p></div>`
+    html: `<div style="font-family:Arial,sans-serif;max-width:600px;margin:auto;color:#18372f"><h1>Turno confirmado</h1><p><strong>Paciente:</strong> ${safe(appointment.first_name)} ${safe(appointment.last_name)}</p><p><strong>Profesional:</strong> ${safe(doctorNames[appointment.doctor_key])}</p><p><strong>Localidad:</strong> ${safe(locationNames[appointment.location_key])}</p><p><strong>Fecha y hora:</strong> ${safe(appointment.appointment_date)} · ${safe(appointment.appointment_time)}</p><p><strong>Comprobante:</strong> ${safe(appointment.receipt_code)}</p><hr><p>Si surge algún inconveniente, Secretaría se comunicará al teléfono informado.</p></div>`
   }) });
   if (!response.ok) return { status: 502, body: { error: 'No se pudo enviar el correo. El turno continúa confirmado.' } };
   return { status: 200, body: { ok: true } };
@@ -287,7 +293,7 @@ export default async function handler(req, res) {
     if (req.method === 'GET' && action === 'health') result = { status: 200, body: { ok: true } };
     else if (req.method === 'GET' && action === 'slots') result = await availableSlots(client, input);
     else if (req.method === 'POST' && action === 'appointment') result = await createAppointment(client, input);
-    else if (req.method === 'POST' && action === 'receipt-email') result = await sendReceipt(input);
+    else if (req.method === 'POST' && action === 'receipt-email') result = await sendReceipt(client, input);
     else if (req.method === 'POST' && action === 'bootstrap') result = await bootstrap(client, input);
     else if (req.method === 'POST' && action === 'login') result = await login(client, input);
     else if (req.method === 'POST' && action === 'logout') result = { status: 200, body: { ok: true }, headers: { 'Set-Cookie': cookie('', 0) } };
