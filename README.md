@@ -8,13 +8,19 @@ Sitio de presentación de Patricia Noelia Leiva Ibañez (Pediatra Neonatóloga) 
 - `recursos/imagenes/`: fotografías originales proporcionadas por el titular del proyecto. Patricia es la doctora vestida de blanco.
 - `vercel.json`: configuración del alojamiento estático.
 
-## Turnos y contacto
+## Sistema de turnos e historias clínicas
 
-No hay un proveedor ni canales de contacto configurados. Los botones muestran un aviso accesible y no reservan turnos ni recopilan datos.
+El mismo proyecto incluye reserva pública de turnos de 15 minutos y un área privada con perfiles para Secretaría, ambas doctoras y Administración. Los datos se almacenan en Turso mediante una función privada de Vercel; ninguna credencial se expone en `index.html`.
 
-Para integrar un servicio externo confirmado, editar `TURNOS_CONFIG` dentro de `index.html`: `general`, `patricia` y `veronica` aceptan URLs HTTPS. Los perfiles usan su URL particular o, si está vacía, la general. Actualizar también el aviso de disponibilidad y los textos de contacto al habilitarlo. Nunca almacenar secretos ni datos médicos en el sitio público.
+- El público solo ve horarios disponibles y confirma un turno con teléfono obligatorio.
+- El comprobante puede imprimirse o guardarse como PDF desde el navegador.
+- El correo se solicita únicamente al elegir el envío del comprobante y requiere configurar Resend.
+- Secretaría administra turnos sin acceso clínico.
+- Las doctoras comparten la historia clínica y cada entrada conserva autoría y fecha.
+- Las atenciones cerradas se corrigen mediante nuevas constancias; no se sobrescriben.
+- Administración gestiona horarios, usuarios y todos los módulos.
 
-Antes de publicar datos nuevos, confirmar direcciones, horarios, contactos y credenciales con las doctoras. No se incluyen datos no proporcionados.
+Variables privadas requeridas en Vercel: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `AUTH_SECRET` y `BOOTSTRAP_SECRET`. Para correo se agregan `RESEND_API_KEY` y `EMAIL_FROM`.
 
 ## Publicación
 
