@@ -10,7 +10,7 @@ Sitio de presentación de Patricia Noelia Leiva Ibañez (Pediatra Neonatóloga) 
 
 ## Sistema de turnos e historias clínicas
 
-El mismo proyecto incluye reserva pública de turnos de 15 minutos y un área privada con perfiles para Secretaría, ambas doctoras y Administración. Los datos se almacenan en Turso mediante una función privada de Vercel; ninguna credencial se expone en `index.html`.
+El mismo proyecto incluye reserva pública de turnos de 15 minutos y un área privada con perfiles para Secretaría, Doctor y Administración. El perfil se obtiene automáticamente de la cuenta al ingresar. Cada cuenta Doctor se asocia con Patricia o Verónica para conservar la autoría clínica. Los datos se almacenan en Turso mediante una función privada de Vercel; ninguna credencial se expone en `index.html`.
 
 - El público solo ve horarios disponibles y confirma un turno con teléfono obligatorio.
 - El comprobante puede imprimirse o guardarse como PDF desde el navegador.

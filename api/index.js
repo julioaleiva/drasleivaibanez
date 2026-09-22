@@ -6,6 +6,7 @@ const scrypt = promisify(scryptCallback);
 const COOKIE = 'dli_session';
 const SESSION_SECONDS = 8 * 60 * 60;
 const ROLES = ['secretaria', 'patricia', 'veronica', 'administrador'];
+const PUBLIC_ROLES = ['secretaria', 'doctor', 'administrador'];
 const DOCTORS = ['patricia', 'veronica'];
 const LOCATIONS = ['aguilares', 'san-miguel'];
 
@@ -94,6 +95,12 @@ function requireRole(user, allowed) {
   if (!allowed.includes(user.role)) { const error = new Error('FORBIDDEN'); error.status = 403; throw error; }
 }
 
+function publicUser(user) {
+  if (!user) return null;
+  const role = DOCTORS.includes(String(user.role)) ? 'doctor' : String(user.role);
+  return { id: user.id, username: user.username, name: user.display_name, role, doctor: user.doctor_key || (DOCTORS.includes(String(user.role)) ? user.role : null), authType: user.auth_type };
+}
+
 async function bootstrap(client, input) {
   const count = await client.execute('SELECT COUNT(*) AS total FROM users');
   if (Number(count.rows[0].total) > 0) return { status: 409, body: { error: 'La configuración inicial ya fue realizada.' } };
@@ -157,19 +164,18 @@ async function createAppointment(client, input) {
 }
 
 async function login(client, input) {
-  const username = clean(input.username, 50).toLowerCase(), role = clean(input.role, 20);
-  if (!ROLES.includes(role)) return { status: 400, body: { error: 'Perfil inválido.' } };
-  const result = await client.execute({ sql: 'SELECT * FROM users WHERE username = ? AND role = ? AND active = 1', args: [username, role] });
+  const username = clean(input.username, 50).toLowerCase();
+  const result = await client.execute({ sql: 'SELECT * FROM users WHERE username = ? AND active = 1', args: [username] });
   const user = result.rows[0];
   if (user?.locked_until && new Date(`${String(user.locked_until).replace(' ', 'T')}Z`).getTime() > Date.now()) return { status: 429, body: { error: 'Acceso bloqueado temporalmente por varios intentos fallidos. Probá nuevamente en 15 minutos.' } };
   const credential = String(input.credential || input.password || '');
   if (!user || !(await passwordVerify(credential, String(user.password_hash)))) {
     if (user) await client.execute({ sql: "UPDATE users SET failed_attempts=failed_attempts+1, locked_until=CASE WHEN failed_attempts+1>=5 THEN datetime('now','+15 minutes') ELSE locked_until END WHERE id=?", args: [user.id] });
-    return { status: 401, body: { error: 'Usuario, perfil o contraseña/PIN incorrectos.' } };
+    return { status: 401, body: { error: 'Usuario o contraseña/PIN incorrectos.' } };
   }
   await client.execute({ sql: 'UPDATE users SET last_login_at=CURRENT_TIMESTAMP, failed_attempts=0, locked_until=NULL WHERE id=?', args: [user.id] });
   await audit(client, user.id, 'login', 'session');
-  return { status: 200, body: { ok: true, user: { id: user.id, username: user.username, name: user.display_name, role: user.role, doctor: user.doctor_key, authType: user.auth_type } }, headers: { 'Set-Cookie': cookie(makeSession(user)) } };
+  return { status: 200, body: { ok: true, user: publicUser(user) }, headers: { 'Set-Cookie': cookie(makeSession(user)) } };
 }
 
 async function dashboard(client, user) {
@@ -178,7 +184,7 @@ async function dashboard(client, user) {
     p.id AS patient_id, p.first_name, p.last_name, p.document_number, p.birth_date, p.phone, p.guardian_name
     FROM appointments a JOIN patients p ON p.id=a.patient_id ORDER BY a.appointment_date DESC, a.appointment_time DESC LIMIT 300`);
   const schedules = await client.execute('SELECT * FROM schedules ORDER BY doctor_key, location_key, weekday, start_time');
-  return { status: 200, body: { user, appointments: appointments.rows, schedules: schedules.rows } };
+  return { status: 200, body: { user: publicUser(user), appointments: appointments.rows, schedules: schedules.rows } };
 }
 
 async function patients(client, user, query) {
@@ -244,12 +250,12 @@ async function saveSchedule(client, user, input) {
 
 async function createUser(client, user, input) {
   requireRole(user, ['administrador']);
-  const username = clean(input.username, 50).toLowerCase(), role = clean(input.role, 20), authType = clean(input.authType, 20) || 'password', credential = String(input.credential || input.password || ''), displayName = clean(input.displayName, 100);
-  if (!ROLES.includes(role) || !['password','pin'].includes(authType) || !/^[a-z0-9._-]{4,50}$/.test(username) || !validCredential(authType, credential) || !displayName) return { status: 400, body: { error: authType === 'pin' ? 'El PIN debe tener exactamente 4 números.' : 'La contraseña debe tener al menos 12 caracteres.' } };
-  const doctorKey = DOCTORS.includes(role) ? role : null;
+  const username = clean(input.username, 50).toLowerCase(), role = clean(input.role, 20), doctorKey = role === 'doctor' ? clean(input.doctor, 20) : null, authType = clean(input.authType, 20) || 'password', credential = String(input.credential || input.password || ''), displayName = clean(input.displayName, 100);
+  if (!PUBLIC_ROLES.includes(role) || (role === 'doctor' && !DOCTORS.includes(doctorKey)) || !['password','pin'].includes(authType) || !/^[a-z0-9._-]{4,50}$/.test(username) || !validCredential(authType, credential) || !displayName) return { status: 400, body: { error: role === 'doctor' && !DOCTORS.includes(doctorKey) ? 'Seleccioná la doctora asociada a la cuenta.' : authType === 'pin' ? 'El PIN debe tener exactamente 4 números.' : 'La contraseña debe tener al menos 12 caracteres.' } };
+  const storedRole = role === 'doctor' ? doctorKey : role;
   try {
-    const result = await client.execute({ sql: 'INSERT INTO users (username, display_name, role, doctor_key, password_hash, auth_type) VALUES (?, ?, ?, ?, ?, ?) RETURNING id', args: [username, displayName, role, doctorKey, await passwordHash(credential), authType] });
-    await audit(client, user.id, 'create', 'user', result.rows[0].id, { role, authType });
+    const result = await client.execute({ sql: 'INSERT INTO users (username, display_name, role, doctor_key, password_hash, auth_type) VALUES (?, ?, ?, ?, ?, ?) RETURNING id', args: [username, displayName, storedRole, doctorKey, await passwordHash(credential), authType] });
+    await audit(client, user.id, 'create', 'user', result.rows[0].id, { role, doctor: doctorKey, authType });
     return { status: 201, body: { ok: true } };
   } catch (error) {
     if (/UNIQUE/i.test(String(error))) return { status: 409, body: { error: 'Ese nombre de usuario ya existe.' } };
@@ -303,7 +309,7 @@ export default async function handler(req, res) {
     else if (req.method === 'POST' && action === 'bootstrap') result = await bootstrap(client, input);
     else if (req.method === 'POST' && action === 'login') result = await login(client, input);
     else if (req.method === 'POST' && action === 'logout') result = { status: 200, body: { ok: true }, headers: { 'Set-Cookie': cookie('', 0) } };
-    else if (req.method === 'GET' && action === 'session') result = { status: 200, body: { user } };
+    else if (req.method === 'GET' && action === 'session') result = { status: 200, body: { user: publicUser(user) } };
     else if (req.method === 'GET' && action === 'dashboard') result = await dashboard(client, user);
     else if (req.method === 'GET' && action === 'patients') result = await patients(client, user, input);
     else if (req.method === 'GET' && action === 'history') result = await clinicalHistory(client, user, Number(input.patientId));
@@ -322,4 +328,4 @@ export default async function handler(req, res) {
   }
 }
 
-export { passwordHash, passwordVerify, validCredential, validDate, validTime };
+export { passwordHash, passwordVerify, publicUser, validCredential, validDate, validTime };

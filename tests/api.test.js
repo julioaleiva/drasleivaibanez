@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { passwordHash, passwordVerify, validCredential, validDate, validTime } from '../api/index.js';
+import { passwordHash, passwordVerify, publicUser, validCredential, validDate, validTime } from '../api/index.js';
 
 test('las contraseñas se almacenan con sal y no como texto', async () => {
   const first = await passwordHash('Una clave segura 2026');
@@ -25,4 +25,11 @@ test('solo se aceptan fechas y turnos de 15 minutos válidos', () => {
   assert.equal(validTime('09:15'), true);
   assert.equal(validTime('09:10'), false);
   assert.equal(validTime('24:00'), false);
+});
+
+test('las cuentas médicas se presentan con el perfil Doctor y conservan su identidad', () => {
+  const user = publicUser({ id: 2, username: 'patricia', display_name: 'Dra. Patricia', role: 'patricia', doctor_key: 'patricia', auth_type: 'pin' });
+  assert.equal(user.role, 'doctor');
+  assert.equal(user.doctor, 'patricia');
+  assert.equal(user.authType, 'pin');
 });
