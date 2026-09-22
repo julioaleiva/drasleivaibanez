@@ -35,6 +35,7 @@ function todayAR() { return new Intl.DateTimeFormat('en-CA', { timeZone: 'Americ
 function validDate(value) { return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(Date.parse(`${value}T12:00:00Z`)); }
 function validTime(value) { return /^(?:[01]\d|2[0-3]):(?:00|15|30|45)$/.test(value); }
 function validEmail(value) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value) && value.length <= 254; }
+function validCredential(authType, credential) { return authType === 'pin' ? /^\d{4}$/.test(credential) : authType === 'password' && credential.length >= 12; }
 
 async function passwordHash(password) {
   const salt = randomBytes(16).toString('base64url');
@@ -75,7 +76,7 @@ async function session(req) {
     if (!signature || signature.length !== expected.length || !timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
     const parsed = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
     if (parsed.exp < Date.now() / 1000) return null;
-    const result = await db().execute({ sql: 'SELECT id, username, display_name, role, doctor_key FROM users WHERE id = ? AND active = 1', args: [parsed.id] });
+    const result = await db().execute({ sql: 'SELECT id, username, display_name, role, doctor_key, auth_type FROM users WHERE id = ? AND active = 1', args: [parsed.id] });
     return result.rows[0] || null;
   } catch { return null; }
 }
@@ -160,10 +161,15 @@ async function login(client, input) {
   if (!ROLES.includes(role)) return { status: 400, body: { error: 'Perfil inválido.' } };
   const result = await client.execute({ sql: 'SELECT * FROM users WHERE username = ? AND role = ? AND active = 1', args: [username, role] });
   const user = result.rows[0];
-  if (!user || !(await passwordVerify(String(input.password || ''), String(user.password_hash)))) return { status: 401, body: { error: 'Usuario, perfil o contraseña incorrectos.' } };
-  await client.execute({ sql: 'UPDATE users SET last_login_at = CURRENT_TIMESTAMP WHERE id = ?', args: [user.id] });
+  if (user?.locked_until && new Date(`${String(user.locked_until).replace(' ', 'T')}Z`).getTime() > Date.now()) return { status: 429, body: { error: 'Acceso bloqueado temporalmente por varios intentos fallidos. Probá nuevamente en 15 minutos.' } };
+  const credential = String(input.credential || input.password || '');
+  if (!user || !(await passwordVerify(credential, String(user.password_hash)))) {
+    if (user) await client.execute({ sql: "UPDATE users SET failed_attempts=failed_attempts+1, locked_until=CASE WHEN failed_attempts+1>=5 THEN datetime('now','+15 minutes') ELSE locked_until END WHERE id=?", args: [user.id] });
+    return { status: 401, body: { error: 'Usuario, perfil o contraseña/PIN incorrectos.' } };
+  }
+  await client.execute({ sql: 'UPDATE users SET last_login_at=CURRENT_TIMESTAMP, failed_attempts=0, locked_until=NULL WHERE id=?', args: [user.id] });
   await audit(client, user.id, 'login', 'session');
-  return { status: 200, body: { ok: true, user: { id: user.id, username: user.username, name: user.display_name, role: user.role, doctor: user.doctor_key } }, headers: { 'Set-Cookie': cookie(makeSession(user)) } };
+  return { status: 200, body: { ok: true, user: { id: user.id, username: user.username, name: user.display_name, role: user.role, doctor: user.doctor_key, authType: user.auth_type } }, headers: { 'Set-Cookie': cookie(makeSession(user)) } };
 }
 
 async function dashboard(client, user) {
@@ -238,12 +244,12 @@ async function saveSchedule(client, user, input) {
 
 async function createUser(client, user, input) {
   requireRole(user, ['administrador']);
-  const username = clean(input.username, 50).toLowerCase(), role = clean(input.role, 20), password = String(input.password || ''), displayName = clean(input.displayName, 100);
-  if (!ROLES.includes(role) || !/^[a-z0-9._-]{4,50}$/.test(username) || password.length < 12 || !displayName) return { status: 400, body: { error: 'Datos de usuario inválidos.' } };
+  const username = clean(input.username, 50).toLowerCase(), role = clean(input.role, 20), authType = clean(input.authType, 20) || 'password', credential = String(input.credential || input.password || ''), displayName = clean(input.displayName, 100);
+  if (!ROLES.includes(role) || !['password','pin'].includes(authType) || !/^[a-z0-9._-]{4,50}$/.test(username) || !validCredential(authType, credential) || !displayName) return { status: 400, body: { error: authType === 'pin' ? 'El PIN debe tener exactamente 4 números.' : 'La contraseña debe tener al menos 12 caracteres.' } };
   const doctorKey = DOCTORS.includes(role) ? role : null;
   try {
-    const result = await client.execute({ sql: 'INSERT INTO users (username, display_name, role, doctor_key, password_hash) VALUES (?, ?, ?, ?, ?) RETURNING id', args: [username, displayName, role, doctorKey, await passwordHash(password)] });
-    await audit(client, user.id, 'create', 'user', result.rows[0].id, { role });
+    const result = await client.execute({ sql: 'INSERT INTO users (username, display_name, role, doctor_key, password_hash, auth_type) VALUES (?, ?, ?, ?, ?, ?) RETURNING id', args: [username, displayName, role, doctorKey, await passwordHash(credential), authType] });
+    await audit(client, user.id, 'create', 'user', result.rows[0].id, { role, authType });
     return { status: 201, body: { ok: true } };
   } catch (error) {
     if (/UNIQUE/i.test(String(error))) return { status: 409, body: { error: 'Ese nombre de usuario ya existe.' } };
@@ -253,12 +259,12 @@ async function createUser(client, user, input) {
 
 async function changePassword(client, user, input) {
   requireRole(user, ROLES);
-  const current = String(input.currentPassword || ''), next = String(input.newPassword || '');
-  if (next.length < 12) return { status: 400, body: { error: 'La nueva contraseña debe tener al menos 12 caracteres.' } };
+  const current = String(input.currentCredential || input.currentPassword || ''), next = String(input.newCredential || input.newPassword || ''), authType = clean(input.authType, 20) || 'password';
+  if (!['password','pin'].includes(authType) || !validCredential(authType, next)) return { status: 400, body: { error: authType === 'pin' ? 'El PIN debe tener exactamente 4 números.' : 'La nueva contraseña debe tener al menos 12 caracteres.' } };
   const result = await client.execute({ sql: 'SELECT password_hash FROM users WHERE id=?', args: [user.id] });
-  if (!result.rows[0] || !(await passwordVerify(current, String(result.rows[0].password_hash)))) return { status: 401, body: { error: 'La contraseña actual no es correcta.' } };
-  await client.execute({ sql: 'UPDATE users SET password_hash=?, updated_at=CURRENT_TIMESTAMP WHERE id=?', args: [await passwordHash(next), user.id] });
-  await audit(client, user.id, 'change_password', 'user', user.id);
+  if (!result.rows[0] || !(await passwordVerify(current, String(result.rows[0].password_hash)))) return { status: 401, body: { error: 'La contraseña o el PIN actual no es correcto.' } };
+  await client.execute({ sql: 'UPDATE users SET password_hash=?, auth_type=?, failed_attempts=0, locked_until=NULL, updated_at=CURRENT_TIMESTAMP WHERE id=?', args: [await passwordHash(next), authType, user.id] });
+  await audit(client, user.id, 'change_credential', 'user', user.id, { authType });
   return { status: 200, body: { ok: true } };
 }
 
@@ -316,4 +322,4 @@ export default async function handler(req, res) {
   }
 }
 
-export { passwordHash, passwordVerify, validDate, validTime };
+export { passwordHash, passwordVerify, validCredential, validDate, validTime };

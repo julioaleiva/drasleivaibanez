@@ -19,6 +19,7 @@ El mismo proyecto incluye reserva pública de turnos de 15 minutos y un área pr
 - Las doctoras comparten la historia clínica y cada entrada conserva autoría y fecha.
 - Las atenciones cerradas se corrigen mediante nuevas constancias; no se sobrescriben.
 - Administración gestiona horarios, usuarios y todos los módulos.
+- Cada cuenta puede utilizar una contraseña de 12 o más caracteres o un PIN de 4 números. Los PIN se bloquean temporalmente después de cinco intentos fallidos; para doctoras y Administración se recomienda contraseña.
 
 Variables privadas requeridas en Vercel: `TURSO_DATABASE_URL`, `TURSO_AUTH_TOKEN`, `AUTH_SECRET` y `BOOTSTRAP_SECRET`. Para correo se agregan `RESEND_API_KEY` y `EMAIL_FROM`.
 
